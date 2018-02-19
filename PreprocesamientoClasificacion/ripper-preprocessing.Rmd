@@ -1,0 +1,236 @@
+---
+title: "Data preprocessing for Ripper"
+author: "Jesús Sánchez de Castro"
+date: "8 de febrero de 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Competición de preprocesamiento en Kaggle
+
+Para este trabajo se emplea un algoritmo de clasificación basado en reglas. Ripper
+es un algoritmo de genera reglas de asociación de forma directa, las reglas se van 
+generando una a una y cada vez que una regla cubre un número grande de instancias
+positivas sin cubrir ninguna instancia negativa, elimina estas instancias positivas
+del conjunto de aprendizaje y continúa generando reglas para cubrir las instancias
+restantes.
+
+Se trata de un algoritmo greedy para el problema del conjunto mínimo de covertura
+y por lo tanto no asegura el número mínimo de reglas. Es por lo tanto un algoritmo
+aproximado para ofrecer una solución a un problema NP-Duro.
+```{r loading libraries, include=FALSE}
+library(VIM)
+library(mice)
+library(RWeka)
+library(robCompositions)
+library(NoiseFiltersR)
+library(FSelector)
+library(Boruta)
+library(caret)
+library(dprep)
+library(unbalanced)
+```
+
+```{r loadind datasets}
+# Put your directory path here
+path <- "C:/Users/Yus/Desktop/Kaggle/super-guacamole"
+setwd(path)
+train <- read.csv(paste0(path,"/my_dataset_train.csv")) 
+test <- read.csv(paste0(path,"/my_dataset_test.csv"))
+```
+
+Debido a la presencia de valores perdidos en los datos, se realizan a continuación
+la imputación de valores perdidos y se realiza una transformación en las variables 
+categóricas de forma que se puedan identificar los valores perdidos.
+
+```{r missing values, include = FALSE}
+# categorical and numerical index for variables
+train$y <- as.factor(train$y)
+categorical_index <- which(sapply(train, is.factor), TRUE)
+categorical_index_label <- categorical_index[-length(categorical_index)]
+numerical_index <- 1:ncol(train)
+numerical_index <- numerical_index[!numerical_index %in% categorical_index]
+
+# These variables have a "" level which is not detected by is.na(). With this 
+# transformation is.na() will be able to count these instances as NA.
+train$x0[which(train$x0=="")]=NA
+train$x14[which(train$x14=="")]=NA
+train$x17[which(train$x17=="")]=NA
+train$x51[which(train$x51=="")]=NA
+train$x61[which(train$x61=="")]=NA
+train$x63[which(train$x63=="")]=NA
+
+lapply(train[,categorical_index], function(x){ x <- as.factor(x)})
+# Count complete and incomplete data
+nic_nopre <- mice::nic(train)
+ncc_nopre <- mice::ncc(train)
+```
+
+```{r remove categorical}
+
+train_no_categorical <- train[,-categorical_index_label]
+test_no_categorical <- test[,-categorical_index]
+
+```
+
+```{r NoiseFilter, CVCF consensus TRUE nfolds 15}
+
+# Sin variables categóricas
+train_CVCF_NC_10_NC <- NoiseFiltersR::CVCF(train_no_categorical, nfolds = 10, 
+                                           consensus = FALSE, 
+                                  classColumn = ncol(train_no_categorical))
+
+# train_CVCF_NC_10 <- NoiseFiltersR::CVCF(train, nfolds = 10, consensus = FALSE, 
+#                                   classColumn = ncol(train))
+# 
+# train_CVCF_C_10 <- NoiseFiltersR::CVCF(train, nfolds = 10, consensus = TRUE, 
+#                                   classColumn = ncol(train))
+# 
+# train_CVCF_NC_15 <- NoiseFiltersR::CVCF(train, nfolds = 15, consensus = FALSE, 
+#                                   classColumn = ncol(train))
+# 
+# train_CVCF_C_15 <- NoiseFiltersR::CVCF(train, nfolds = 15, consensus = TRUE, 
+#                                   classColumn = ncol(train))
+# 
+# dim_C_10 <- dim(train_CVCF_C_10$cleanData)
+# dim_C_15 <- dim(train_CVCF_C_15$cleanData)
+# dim_NC_10 <- dim(train_CVCF_NC_10$cleanData)
+# dim_NC_15 <- dim(train_CVCF_NC_15$cleanData)
+
+# Escribimos los datasets con categoricas
+write.csv(train_CVCF_C_10$cleanData, paste0(path,"/datasets/train_CVCF_C_10.csv"))
+write.csv(train_CVCF_C_15$cleanData, paste0(path,"/datasets/train_CVCF_C_15.csv"))
+write.csv(train_CVCF_NC_10$cleanData,paste0(path,"/datasets/train_CVCF_NC_10.csv"))
+write.csv(train_CVCF_NC_15$cleanData, paste0(path,"/datasets/train_CVCF_NC_15.csv"))
+
+# Dataset sin categoricas 
+write.csv(train_CVCF_NC_10_NC$cleanData, paste0(path,"/datasets/train_CVCF_C_10_NC.csv"))
+
+dim(train)
+dim_C_10 
+dim_C_15 
+dim_NC_10 
+dim_NC_15
+```
+
+
+```{r read after CVCF}
+train_CVCF_C_10 <- read.csv(paste0(path,"/datasets/train_CVCF_C_10.csv"))
+train_CVCF_C_15 <- read.csv(paste0(path,"/datasets/train_CVCF_C_15.csv"))
+train_CVCF_NC_10 <- read.csv(paste0(path,"/datasets/train_CVCF_NC_10.csv"))
+train_CVCF_NC_15 <- read.csv(paste0(path,"/datasets/train_CVCF_NC_15.csv"))
+
+# No categorical 
+train_CVCF_NC_10_NC<- read.csv(paste0(path,"/datasets/train_CVCF_C_10_NC.csv"))
+```
+
+```{r vim knn imputation no categorical values}
+set.seed(1)
+train_knni_NC <- VIM::kNN(data = train_CVCF_NC_10_NC, 
+                         variable = names(train_CVCF_NC_10_NC),
+                         metric = "Euclidean",
+                         k = 7, numFun = "mean",
+                         dist_var = names(train_CVCF_NC_10_NC))
+
+train_knni_NC <- train_knni_NC[,1:ncol(train_CVCF_NC_10_NC)]
+
+nic_KNNI <- mice::nic(train_knni_NC)
+ncc_KNNI <- mice::ncc(train_knni_NC)
+
+write.csv(train_knni_NC, paste0(path,"/datasets/train_CVCF_C_10_KNNI_NC.csv"))
+```
+
+```{r vim knn imputation}
+set.seed(1)
+train_knni <- VIM::kNN(data = train_CVCF_C_10$cleanData, 
+                         variable = names(train_CVCF_C_10$cleanData),
+                         metric = "Euclidean",
+                         k = 7, numFun = "mean", catFun = "mode",
+                         dist_var = names(train_CVCF_C_10$cleanData))
+
+train_knni_result <- train_knni[,1:ncol(train)]
+
+nic_KNNI <- mice::nic(train_knni)
+ncc_KNNI <- mice::ncc(train_knni)
+
+write.csv(train_knni_result, paste0(path,"/datasets/train_CVCF_C_10_KNNI.csv"))
+```
+
+```{r read after knn imputation}
+train_knni <- read.csv(paste0(path,"/datasets/train_CVCF_C_10_KNNI.csv"))
+```
+
+```{r feature selection}
+
+control <- caret::gafsControl(functions = "caretGA")
+
+obj <- caret::gafs( x = train_knni[,-(ncol(train_knni))],
+                    y = train_knni$y,
+                    iters = 10,
+                    gafsControl = control)
+
+```
+
+```{r boruta feature selection}
+boruta_result <- Boruta::Boruta(x = train_knni_NC[,-ncol(train_knni_NC)], 
+                                y = train_knni_NC$y, maxRuns = 10000)
+
+boruta_remove <- which(boruta_result$finalDecision == "Rejected", TRUE)
+
+train_CVCF_KNNI_BORUTA <- train_knni_NC[,-boruta_remove]
+```
+
+```{r oversampling}
+over03 <- train_CVCF_KNNI_BORUTA[train_CVCF_KNNI_BORUTA$y == "0",]
+over03 <- rbind(over03, train_CVCF_KNNI_BORUTA[train_CVCF_KNNI_BORUTA$y == "3",])
+over03$y <- ifelse(over03$y == 0, over03$y <- 1, over03$y <- 0)
+over03$y <- as.factor(over03$y)
+over03 <- unbalanced::ubOver(X = over03[,-ncol(over03)], Y = over03$y , k = 0)
+over03 <- over03$X
+over03$y <- ifelse(over03$y == "1", over03$y <- "0", over03$y <- "3")
+
+
+over13 <- train_CVCF_KNNI_BORUTA[train_CVCF_KNNI_BORUTA$y == "1",]
+over13 <- rbind(over13, train_CVCF_KNNI_BORUTA[train_CVCF_KNNI_BORUTA$y == "3",])
+over13$y <- ifelse(over13$y == "1", over13$y <- "1", over13$y <- "0")
+over13 <- unbalanced::ubOver(X = over13[-over13$y], Y = over13$y , k = 0)
+over13 <- over13$X
+over13$y <- ifelse(over13$y == "1", over03$y <- "1", over03$y <- "3")
+
+
+over23 <- train_CVCF_KNNI_BORUTA[train_CVCF_KNNI_BORUTA$y == "0",]
+over23 <- rbind(over23, train_CVCF_KNNI_BORUTA[train_CVCF_KNNI_BORUTA$y == "3",])
+over23$y <- ifelse(over23$y == "0", over23$y <- "1", over23$y <- "0")
+over23 <- unbalanced::ubOver(X = over23[-over23$y], Y = over23$y , k = 0)
+over23 <- over23$X
+over23$y <- ifelse(over23$y == "1", over03$y <- "2", over03$y <- "3")
+
+
+train_CVCF_KNNI_BORUTA_OVER <- rbind(over03[over03$y=="0"],
+                                     over03[over03$y=="1"],
+                                     over03[over03$y=="2"],
+                                     over03[over03$y=="3"])
+
+```
+
+```{r fit model}
+
+train_CVCF_KNNI_BORUTA$y <- as.factor(train_CVCF_KNNI_BORUTA$y)
+fit <- JRip(y ~ ., data = train_CVCF_KNNI_BORUTA)
+
+# FIT con categoricas
+# Prediction <- predict(fit, test, type = "class")
+
+# FIT sin categoricas
+Prediction <- predict(fit, test_no_categorical, type = "class")
+```
+
+```{r save results}
+Id <- 1:nrow(test)
+output <- data.frame(Id, Prediction)
+write.table(output, "submision.csv", sep = ",", quote = F, row.names = F)
+```
+

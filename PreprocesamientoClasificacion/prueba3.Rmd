@@ -1,0 +1,156 @@
+---
+title: "preprocesing"
+author: "Jesús Sánchez de Castro"
+date: "17 de febrero de 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r loading libraries, include=FALSE}
+library(VIM)
+library(mice)
+library(RWeka)
+library(robCompositions)
+library(NoiseFiltersR)
+library(FSelector)
+library(Boruta)
+library(caret)
+library(dprep)
+library(unbalanced)
+```
+
+```{r loadind datasets}
+# Put your directory path here
+path <- "C:/Users/Yus/Desktop/Kaggle/super-guacamole"
+setwd(path)
+train <- read.csv(paste0(path,"/my_dataset_train.csv")) 
+test <- read.csv(paste0(path,"/my_dataset_test.csv"))
+```
+
+```{r missing values, include = FALSE}
+# categorical and numerical index for variables
+categorical_index <- which(sapply(train, is.factor), TRUE)
+categorical_index_label <- categorical_index[-length(categorical_index)]
+numerical_index <- 1:ncol(train)
+numerical_index <- numerical_index[!numerical_index %in% categorical_index]
+
+# These variables have a "" level which is not detected by is.na(). With this 
+# transformation is.na() will be able to count these instances as NA.
+train$x0[which(train$x0=="")]=NA
+train$x14[which(train$x14=="")]=NA
+train$x17[which(train$x17=="")]=NA
+train$x51[which(train$x51=="")]=NA
+train$x61[which(train$x61=="")]=NA
+train$x63[which(train$x63=="")]=NA
+
+test$x0[which(train$x0=="")]=NA
+test$x14[which(train$x14=="")]=NA
+test$x17[which(train$x17=="")]=NA
+test$x51[which(train$x51=="")]=NA
+test$x61[which(train$x61=="")]=NA
+test$x63[which(train$x63=="")]=NA
+
+lapply(train[,categorical_index], function(x){ x <- as.factor(x)})
+train$y <- as.factor(train$y)
+# Count complete and incomplete data
+nic_nopre <- mice::nic(train)
+ncc_nopre <- mice::ncc(train)
+```
+
+```{r remove categorical}
+
+train_no_categorical <- train[,-categorical_index_label]
+test_no_categorical <- test[,-categorical_index]
+
+```
+
+```{r IPF }
+
+# El razonamiento es el siguiente: en caso de que haya una cantidad considerable
+# de ruido, aplicamos IPF sin voting scheme para eliminar la mayor parte del 
+# ruido. Posteriormente, cuando se haga imputación se volverá a aplicar con 
+# consensus == TRUE para evitar eliminar instancias con menos prob de ser ruido.
+set.seed(123)
+IPF_result <- NoiseFiltersR::IPF(x = train_no_categorical, nfolds = 10, consensus = TRUE, 
+                            p = 0.01, s = 3, y = 0.5, classColumn = ncol(train_no_categorical))
+IPF <- IPF_result$cleanData
+write.csv(paste0(path,"/datasets/train_IPF_default.csv"))
+```
+
+```{r load ipf}
+IPF <- read.csv(paste0(path,"/datasets/train_IPF_default.csv")) 
+```
+
+```{r vim knn imputation}
+set.seed(1)
+KNNI_result <- VIM::kNN(data = IPF, 
+                         variable = names(IPF),
+                         metric = "Euclidean",
+                         k = 7, numFun = "mean", 
+                         dist_var = names(IPF))
+
+KNNI <- KNNI_result[,1:ncol(IPF)]
+
+nic_KNNI <- mice::nic(KNNI)
+ncc_KNNI <- mice::ncc(KNNI)
+
+write.csv(KNNI, paste0(path,"/datasets/train_IPF_KNNI7_NC.csv"))
+```
+
+```{r load ipf knni}
+KNNI <- read.csv(paste0(path,"/datasets/train_IPF_KNNI9.csv")) 
+```
+
+```{r IPF}
+set.seed(123)
+IPF_result2 <- NoiseFiltersR::IPF(x = KNNI, nfolds = 5, consensus = TRUE, 
+                            p = 0.01, s = 3, y = 0.5, classColumn = ncol(KNNI))
+IPF2 <- IPF_result2$cleanData
+write.csv(IPF2, paste0(path,"/datasets/train_IPF_KNNI_IPF.csv"))
+```
+
+```{r load ipf knni ipf}
+IPF2 <- read.csv(paste0(path,"/datasets/train_IPF_KNNI_IPF.csv")) 
+```
+
+```{r boruta feature selection}
+boruta_result <- Boruta::Boruta(x = IPF2[,-ncol(IPF2)], 
+                                y = IPF2$y, maxRuns = 10000)
+
+boruta_remove <- which(boruta_result$finalDecision == "Rejected", TRUE)
+
+BORUTA <- IPF2[,-boruta_remove]
+write.csv(BORUTA, paste0(path,"/datasets/train_IPF_KNNI_IPF_BORUTA.csv"))
+
+```
+
+```{r load ipf knni ipf}
+BORUTA <- read.csv(paste0(path,"/datasets/train_IPF_KNNI_IPF_BORUTA.csv")) 
+```
+
+```{r ENN}
+ENN_result <- NoiseFiltersR::AENN(x = BORUTA, 
+                                classColumn = ncol(BORUTA), k = 5)
+
+ENN <- ENN_result$cleanData
+
+write.csv(ENN, paste0(path,"/datasets/train_IPF_KNNI_IPF_BORUTA.csv"))
+```
+
+```{r fit model}
+final_TRAIN <- KNNI
+final_TRAIN$y <- as.factor(final_TRAIN$y)
+fit <- JRip(y ~ ., data = final_TRAIN)
+
+# FIT sin categoricas
+Prediction <- predict(fit, test, type = "class")
+```
+
+```{r save results}
+Id <- 1:nrow(test)
+output <- data.frame(Id, Prediction)
+write.table(output, "submision_IPF_KNNI.csv", sep = ",", quote = F, row.names = F)
+```
